@@ -135,14 +135,6 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
 }
 
-// Cleanup function
-void cleanup_simulation() {
-    cudaFree(d_bin_indices);
-    cudaFree(d_bin_counts);
-    cudaFree(d_bin_scan);
-    cudaFree(d_particle_bins);
-}
-
 // Simulation step function
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     int host_num_bins_x, host_num_bins_y;
