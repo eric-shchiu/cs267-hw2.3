@@ -135,6 +135,41 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
 }
 
+__global__ void scan_prefix_sum_kernel(int* input, int* output, int n) {
+    extern __shared__ int temp[]; // 共享内存
+    int tid = threadIdx.x;
+
+    // 复制到共享内存
+    if (tid < n) {
+        temp[tid] = input[tid];
+    } else {
+        temp[tid] = 0;
+    }
+    __syncthreads();
+
+    // 上升阶段（reduce phase）
+    for (int offset = 1; offset < n; offset *= 2) {
+        if (tid >= offset) {
+            temp[tid] += temp[tid - offset];
+        }
+        __syncthreads();
+    }
+
+    // 下降阶段（down-sweep phase）
+    for (int offset = n / 2; offset > 0; offset /= 2) {
+        if (tid >= offset) {
+            temp[tid] += temp[tid - offset];
+        }
+        __syncthreads();
+    }
+
+    // 写回全局内存
+    if (tid < n) {
+        output[tid] = temp[tid];
+    }
+}
+
+
 // Simulation step function
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     int host_num_bins_x, host_num_bins_y;
