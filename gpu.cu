@@ -1,6 +1,10 @@
 #include "common.h"
 #include <cuda.h>
 #include <thrust/scan.h>
+#include <thrust/execution_policy.h>
+#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
+
 #include <iostream>
 
 #define NUM_THREADS 256
