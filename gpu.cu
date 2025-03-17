@@ -52,7 +52,7 @@ __global__ void bin_particles_gpu(particle_t* particles, int num_parts, int* bin
 
 // Kernel to compute forces in parallel
 __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_scan, int* particle_bins) {
-    __shared__ particle_t shared_particles[NUM_THREADS];
+    extern __shared__ particle_t shared_particles[]; // 动态共享内存
 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= num_parts) return;
@@ -64,8 +64,6 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bi
     int bin_x = bin_index % num_bins_x;
     int bin_y = bin_index / num_bins_x;
 
-    int num_neighbors = 0;
-
     for (int dx = -1; dx <= 1; ++dx) {
         for (int dy = -1; dy <= 1; ++dy) {
             int neighbor_bin_x = bin_x + dx;
@@ -73,6 +71,7 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bi
 
             if (neighbor_bin_x >= 0 && neighbor_bin_x < num_bins_x &&
                 neighbor_bin_y >= 0 && neighbor_bin_y < num_bins_y) {
+
                 int neighbor_bin_index = neighbor_bin_y * num_bins_x + neighbor_bin_x;
                 int bin_start = (neighbor_bin_index == 0) ? 0 : bin_scan[neighbor_bin_index - 1];
                 int bin_end = bin_scan[neighbor_bin_index];
@@ -93,6 +92,7 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bi
         }
     }
 }
+
 
 // Kernel to move particles
 __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
@@ -145,15 +145,12 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
 
     bin_particles_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_counts, d_bin_scan, d_particle_bins);
-    cudaDeviceSynchronize();
+    
+    // **用 CUDA 核函数替换 Thrust Scan**
+    scan_prefix_sum_kernel<<<1, num_bins>>>(d_bin_counts, d_bin_scan, num_bins);
 
-    thrust::device_ptr<int> thrust_bin_counts(d_bin_counts);
-    thrust::device_ptr<int> thrust_bin_scan(d_bin_scan);
-    thrust::exclusive_scan(thrust_bin_counts, thrust_bin_counts + num_bins, thrust_bin_scan);
-
-    compute_forces_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_scan, d_particle_bins);
-    cudaDeviceSynchronize();
+    compute_forces_gpu<<<blks, NUM_THREADS, NUM_THREADS * sizeof(particle_t)>>>(parts, num_parts, d_bin_indices, d_bin_scan, d_particle_bins);
 
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
-    cudaDeviceSynchronize();
 }
+
