@@ -18,6 +18,24 @@ int* d_bin_counts;
 int* d_bin_scan;
 int* d_particle_bins;
 
+__device__ void apply_force_gpu(particle_t& particle, particle_t& neighbor) {
+    double dx = neighbor.x - particle.x;
+    double dy = neighbor.y - particle.y;
+    double r2 = dx * dx + dy * dy;
+    if (r2 > cutoff * cutoff)
+        return;
+    // r2 = fmax( r2, min_r*min_r );
+    r2 = (r2 > min_r * min_r) ? r2 : min_r * min_r;
+    double r = sqrt(r2);
+
+    //
+    //  very simple short-range repulsive force
+    //
+    double coef = (1 - cutoff / r) / r2 / mass;
+    particle.ax += coef * dx;
+    particle.ay += coef * dy;
+}
+
 // Kernel to assign particles to bins and count particles per bin
 __global__ void assign_bins_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_counts) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
