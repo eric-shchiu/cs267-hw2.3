@@ -50,7 +50,6 @@ __global__ void compute_forces_gpu(particle_t* d_parts, int num_parts, int* d_pa
                 apply_force_gpu(d_parts[i], d_parts[d_part_ids[j]]);
         }
     }
-
 }
 
 __global__ void move_gpu(particle_t* d_parts, int num_parts, double size) {
