@@ -106,6 +106,15 @@ __global__ void reorder_particles_gpu(int* particle_bins, int* bin_indices, int*
 	
     int offset = atomicAdd(&bin_scan[bin_index], 1);
     particle_bins[offset] = tid; // Store the particle ID in the compacted array
+
+    // int offset;
+    // if (bin_index == 0) {
+    //     offset = atomicAdd(&bin_scan[0], 1);
+    // } else {
+    //     offset = bin_scan[bin_index-1] + atomicAdd(&bin_scan[bin_index], 1);
+    // }
+
+    // particle_bins[offset] = tid;
 }
 
 __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_scan, int* particle_bins) {
@@ -196,21 +205,6 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMemcpyToSymbol(::bin_size, &host_bin_size, sizeof(double));
     cudaMemcpyToSymbol(::num_bins_x, &host_num_bins_x, sizeof(int));
     cudaMemcpyToSymbol(::num_bins_y, &host_num_bins_y, sizeof(int));
-
-    // Allocate device memory for our data structures
-    ParticleData pd; // Create a local ParticleData object
-    cudaMalloc(&pd.bin_indices, num_parts * sizeof(int));
-    cudaMalloc(&pd.bin_counts, num_bins * sizeof(int));
-    cudaMalloc(&pd.bin_scan, num_bins * sizeof(int));
-    cudaMalloc(&pd.particle_bins, num_parts * sizeof(int));
-
-    // Set the particles pointer
-    pd.particles = parts;
-
-    // Copy bin parameters to device-accessible memory
-    cudaMemcpyToSymbol(::bin_size, &bin_size, sizeof(double));
-    cudaMemcpyToSymbol(::num_bins_x, &num_bins_x, sizeof(int));
-    cudaMemcpyToSymbol(::num_bins_y, &num_bins_y, sizeof(int));
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
