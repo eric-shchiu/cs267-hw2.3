@@ -84,6 +84,7 @@ __device__ void apply_symmetric_force(particle_t& p1, particle_t& p2) {
     double ax = coef * dx;
     double ay = coef * dy;
 
+    // apply force on both particles
     atomicAdd(&p1.ax, ax);
     atomicAdd(&p1.ay, ay);
     atomicAdd(&p2.ax, -ax);
