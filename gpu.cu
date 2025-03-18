@@ -1,7 +1,7 @@
 #include "common.h"
 #include <cuda.h>
 #include <thrust/device_vector.h>
-#include <thrust/scan.h> // Include for thrust::exclusive_scan
+#include <thrust/scan.h>
 
 #define NUM_THREADS 256
 
@@ -11,6 +11,11 @@ int blks;
 // __device__ variables (accessible by all kernels)
 __device__ double bin_size;
 __device__ int num_bins_x, num_bins_y;
+
+int* d_bin_indices = nullptr;
+int* d_bin_counts = nullptr;
+int* d_bin_scan = nullptr;
+int* d_particle_bins = nullptr;
 
 // Kernel to assign particles to bins and count particles per bin
 __global__ void assign_bins_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_counts) {
@@ -142,67 +147,57 @@ __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
 
 // Initialization function (host-side)
 void init_simulation(particle_t* parts, int num_parts, double size) {
-    // Calculate the number of blocks
+    // calculate the number of blocks
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
-    // Calculate bin parameters (on the host)
+    // calculate the bin parameters
     double host_bin_size = cutoff;
     int host_num_bins_x = static_cast<int>(size / host_bin_size) + 1;
     int host_num_bins_y = static_cast<int>(size / host_bin_size) + 1;
+    int num_bins = host_num_bins_x * host_num_bins_y;
 
-    // Copy bin parameters to __device__ variables
-    cudaMemcpyToSymbol(::bin_size, &host_bin_size, sizeof(double));
-    cudaMemcpyToSymbol(::num_bins_x, &host_num_bins_x, sizeof(int));
-    cudaMemcpyToSymbol(::num_bins_y, &host_num_bins_y, sizeof(int));
+    // copy to device
+    cudaMemcpyToSymbol(bin_size, &host_bin_size, sizeof(double));
+    cudaMemcpyToSymbol(num_bins_x, &host_num_bins_x, sizeof(int));
+    cudaMemcpyToSymbol(num_bins_y, &host_num_bins_y, sizeof(int));
+
+    // release the previous memory (if exists)
+    if (d_bin_indices) cudaFree(d_bin_indices);
+    if (d_bin_counts) cudaFree(d_bin_counts);
+    if (d_bin_scan) cudaFree(d_bin_scan);
+    if (d_particle_bins) cudaFree(d_particle_bins);
+
+    // allocate new memory
+    cudaMalloc(&d_bin_indices, num_parts * sizeof(int));
+    cudaMalloc(&d_bin_counts, num_bins * sizeof(int));
+    cudaMalloc(&d_bin_scan, num_bins * sizeof(int));
+    cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
 }
 
 // Simulation step function (host-side)
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // Get the values of num_bins_x and num_bins_y from device memory
     int host_num_bins_x, host_num_bins_y;
-    cudaMemcpyFromSymbol(&host_num_bins_x, ::num_bins_x, sizeof(int));
-    cudaMemcpyFromSymbol(&host_num_bins_y, ::num_bins_y, sizeof(int));
-
+    cudaMemcpyFromSymbol(&host_num_bins_x, num_bins_x, sizeof(int));
+    cudaMemcpyFromSymbol(&host_num_bins_y, num_bins_y, sizeof(int));
     int num_bins = host_num_bins_x * host_num_bins_y;
 
-    // Allocate memory on the device *per step*
-    int* d_bin_indices;
-    int* d_bin_counts;
-    int* d_bin_scan;
-    int* d_particle_bins;
-    cudaMalloc(&d_bin_indices, num_parts * sizeof(int));
-    cudaMalloc(&d_bin_counts, num_bins * sizeof(int));
-    cudaMalloc(&d_bin_scan, num_bins * sizeof(int));  // Still allocate space for the result
-    cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
-
-    // Reset bin counts
+    // reset the bin counts
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
 
-    // 1. Assign particles to bins
+    // Step 1: assign particles to bins
     assign_bins_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_counts);
-    cudaDeviceSynchronize();
 
-    // 2. Exclusive prefix sum using Thrust
-    thrust::device_ptr<int> thrust_bin_counts(d_bin_counts);
-    thrust::device_ptr<int> thrust_bin_scan(d_bin_scan);
-    thrust::exclusive_scan(thrust_bin_counts, thrust_bin_counts + num_bins, thrust_bin_scan);
-    // No need for cudaDeviceSynchronize() here; Thrust operations are synchronous.
+    // Step 2: Calculate the prefix
+    thrust::exclusive_scan(thrust::device_ptr<int>(d_bin_counts),
+                           thrust::device_ptr<int>(d_bin_counts + num_bins),
+                           thrust::device_ptr<int>(d_bin_scan));
 
-    // 3. Reorder particle indices
+    // Step 3: Reorder the particles
     reorder_particles_gpu<<<blks, NUM_THREADS>>>(d_particle_bins, d_bin_indices, d_bin_scan, num_parts);
-    cudaDeviceSynchronize();
 
-    // 4. Compute forces
+    // Step 4: Calculate the forces
     compute_forces_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_scan, d_particle_bins);
-    cudaDeviceSynchronize();
 
-    // 5. Move particles
+    // Step 5: Move particles
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
-    cudaDeviceSynchronize();
-
-    // Free the dynamically allocated memory *per step*
-    cudaFree(d_bin_indices);
-    cudaFree(d_bin_counts);
-    cudaFree(d_bin_scan);
-    cudaFree(d_particle_bins);
 }
