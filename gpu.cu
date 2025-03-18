@@ -17,6 +17,9 @@ int* d_bin_counts = nullptr;
 int* d_bin_scan = nullptr;
 int* d_particle_bins = nullptr;
 
+static int host_num_bins_x_cache = 0;
+static int host_num_bins_y_cache = 0;
+
 // Kernel to assign particles to bins and count particles per bin
 __global__ void assign_bins_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_counts) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -175,18 +178,18 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     double host_bin_size = cutoff;
     int host_num_bins_x = static_cast<int>(size / host_bin_size) + 1;
     int host_num_bins_y = static_cast<int>(size / host_bin_size) + 1;
-    int num_bins = host_num_bins_x * host_num_bins_y;
+
+    // Cache calculation results to host variables
+    host_num_bins_x_cache = host_num_bins_x;
+    host_num_bins_y_cache = host_num_bins_y;
+
+    // calculate the total number of bins
+    const int num_bins = host_num_bins_x * host_num_bins_y;
 
     // copy to device
     cudaMemcpyToSymbol(bin_size, &host_bin_size, sizeof(double));
     cudaMemcpyToSymbol(num_bins_x, &host_num_bins_x, sizeof(int));
     cudaMemcpyToSymbol(num_bins_y, &host_num_bins_y, sizeof(int));
-
-    // release the previous memory (if exists)
-    if (d_bin_indices) cudaFree(d_bin_indices);
-    if (d_bin_counts) cudaFree(d_bin_counts);
-    if (d_bin_scan) cudaFree(d_bin_scan);
-    if (d_particle_bins) cudaFree(d_particle_bins);
 
     // allocate new memory
     cudaMalloc(&d_bin_indices, num_parts * sizeof(int));
@@ -197,10 +200,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 
 // Simulation step function (host-side)
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    int host_num_bins_x, host_num_bins_y;
-    cudaMemcpyFromSymbol(&host_num_bins_x, num_bins_x, sizeof(int));
-    cudaMemcpyFromSymbol(&host_num_bins_y, num_bins_y, sizeof(int));
-    int num_bins = host_num_bins_x * host_num_bins_y;
+    const int num_bins = host_num_bins_x_cache * host_num_bins_y_cache;
 
     // reset the bin counts
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
