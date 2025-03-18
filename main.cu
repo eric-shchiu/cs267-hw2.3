@@ -7,10 +7,14 @@
 #include <iostream>
 #include <random>
 #include <vector>
+#include "globals.h"
 
 // =================
 // Helper Functions
 // =================
+
+double sync_time = 0.0;
+double comp_time = 0.0;
 
 // I/O routines
 void save(std::ofstream& fsave, particle_t* parts, int num_parts, double size) {
@@ -145,6 +149,8 @@ int main(int argc, char** argv) {
 
     // Finalize
     std::cout << "Simulation Time = " << seconds << " seconds for " << num_parts << " particles.\n";
+    std::cout << " Synchronization time: " << sync_time << " seconds\n";
+    std::cout << " Computation time: " << comp_time << " seconds\n";
     fsave.close();
     cudaFree(parts_gpu);
     delete[] parts;

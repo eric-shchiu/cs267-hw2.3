@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
+#include "globals.h"
 
 #define NUM_THREADS 256
 
@@ -199,27 +200,97 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
 }
 
-// Simulation step function (host-side)
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     const int num_bins = host_num_bins_x_cache * host_num_bins_y_cache;
 
-    // reset the bin counts
+    // create cuda event
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    float computation_time = 0.0f, synchronization_time = 0.0f;
+
+    // Step 1: Reset the bin counts
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
 
-    // Step 1: assign particles to bins
+    // Assign Bins
+    cudaEventRecord(start);
     assign_bins_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_counts);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    comp_time += computation_time / 1000.0; // transfer to seconds
 
-    // Step 2: Calculate the prefix
+    cudaEventRecord(start);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&synchronization_time, start, stop);
+    sync_time += synchronization_time / 1000.0;
+
+    // Prefix Sum
+    cudaEventRecord(start);
     thrust::exclusive_scan(thrust::device_ptr<int>(d_bin_counts),
                            thrust::device_ptr<int>(d_bin_counts + num_bins),
                            thrust::device_ptr<int>(d_bin_scan));
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    comp_time += computation_time / 1000.0;
 
-    // Step 3: Reorder the particles
+    cudaEventRecord(start);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&synchronization_time, start, stop);
+    sync_time += synchronization_time / 1000.0;
+
+    // Reorder Particles
+    cudaEventRecord(start);
     reorder_particles_gpu<<<blks, NUM_THREADS>>>(d_particle_bins, d_bin_indices, d_bin_scan, num_parts);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    comp_time += computation_time / 1000.0;
 
-    // Step 4: Calculate the forces
+    cudaEventRecord(start);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&synchronization_time, start, stop);
+    sync_time += synchronization_time / 1000.0;
+
+    // Compute Forces
+    cudaEventRecord(start);
     compute_forces_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_scan, d_particle_bins);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    comp_time += computation_time / 1000.0;
 
-    // Step 5: Move particles
+    cudaEventRecord(start);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&synchronization_time, start, stop);
+    sync_time += synchronization_time / 1000.0;
+
+    // Move Particles
+    cudaEventRecord(start);
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&computation_time, start, stop);
+    comp_time += computation_time / 1000.0;
+
+    cudaEventRecord(start);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&synchronization_time, start, stop);
+    sync_time += synchronization_time / 1000.0;
+
+    // release cuda event
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 }
