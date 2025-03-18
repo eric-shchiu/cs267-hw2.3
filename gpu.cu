@@ -1,7 +1,7 @@
 #include "common.h"
 #include <cuda.h>
 #include <thrust/device_vector.h>
-#include <thrust/scan.h> // Include for thrust::exclusive_scan
+#include <thrust/scan.h>
 
 #define NUM_THREADS 256
 
@@ -11,6 +11,14 @@ int blks;
 // __device__ variables (accessible by all kernels)
 __device__ double bin_size;
 __device__ int num_bins_x, num_bins_y;
+
+int* d_bin_indices = nullptr;
+int* d_bin_counts = nullptr;
+int* d_bin_scan = nullptr;
+int* d_particle_bins = nullptr;
+
+static int host_num_bins_x_cache = 0;
+static int host_num_bins_y_cache = 0;
 
 // Kernel to assign particles to bins and count particles per bin
 __global__ void assign_bins_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_counts) {
@@ -61,7 +69,27 @@ __global__ void reorder_particles_gpu(int* particle_bins, int* bin_indices, int*
     particle_bins[offset] = tid; // Store particle index
 }
 
-// Kernel to compute forces between particles, using binning
+__device__ void apply_symmetric_force(particle_t& p1, particle_t& p2) {
+    double dx = p2.x - p1.x;
+    double dy = p2.y - p1.y;
+    double r2 = dx*dx + dy*dy;
+
+    if (r2 > cutoff*cutoff) return;
+
+    r2 = fmax(r2, min_r*min_r);
+    double r = sqrt(r2);
+    double coef = (1 - cutoff/r) / (r2 * mass);
+
+    // Update the acceleration of both particles
+    double ax = coef * dx;
+    double ay = coef * dy;
+
+    atomicAdd(&p1.ax, ax);
+    atomicAdd(&p1.ay, ay);
+    atomicAdd(&p2.ax, -ax);
+    atomicAdd(&p2.ay, -ay);
+}
+
 __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_scan, int* particle_bins) {
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid >= num_parts) return;
@@ -88,29 +116,30 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bi
     int bin_x = bin_index % num_bins_x;
     int bin_y = bin_index / num_bins_x;
 
-    // Iterate over neighboring bins (including the current bin, handled above)
-    for (int dx = -1; dx <= 1; ++dx) {
-        for (int dy = -1; dy <= 1; ++dy) {
-            if (dx == 0 && dy == 0) continue; // Skip the current bin itself
+    // Iterate over neighboring bins (right / down / right-down / left-down)
+    const int neighbor_dirs[4][2] = {{1,0},  {0,1},  {1,1}, {-1,1}};
 
-            int neighbor_bin_x = bin_x + dx;
-            int neighbor_bin_y = bin_y + dy;
+    for (int dir = 0; dir < 4; ++dir) {
+        int dx = neighbor_dirs[dir][0];
+        int dy = neighbor_dirs[dir][1];
 
-            // Check if neighboring bin indices are within bounds
-            if (neighbor_bin_x >= 0 && neighbor_bin_x < num_bins_x &&
-                neighbor_bin_y >= 0 && neighbor_bin_y < num_bins_y) {
+        int neighbor_bin_x = bin_x + dx;
+        int neighbor_bin_y = bin_y + dy;
 
-                int neighbor_bin_index = neighbor_bin_y * num_bins_x + neighbor_bin_x;
+        // Check if neighboring bin indices are within bounds
+        if (neighbor_bin_x >= 0 && neighbor_bin_x < num_bins_x &&
+            neighbor_bin_y >= 0 && neighbor_bin_y < num_bins_y) {
 
-                // Calculate start and end indices for the neighboring bin
-                int neighbor_bin_start = (neighbor_bin_index == 0) ? 0 : bin_scan[neighbor_bin_index - 1];
-                int neighbor_bin_end = bin_scan[neighbor_bin_index];
+            int neighbor_bin_index = neighbor_bin_y * num_bins_x + neighbor_bin_x;
 
-                // Iterate over particles in the neighboring bin
-                for (int i = neighbor_bin_start; i < neighbor_bin_end; ++i) {
-                    int other_particle_index = particle_bins[i];
-                    apply_force_gpu(particles[tid], particles[other_particle_index]);
-                }
+            // Calculate start and end indices for the neighboring bin
+            int neighbor_bin_start = (neighbor_bin_index == 0) ? 0 : bin_scan[neighbor_bin_index - 1];
+            int neighbor_bin_end = bin_scan[neighbor_bin_index];
+
+            // Iterate over particles in the neighboring bin
+            for (int i = neighbor_bin_start; i < neighbor_bin_end; ++i) {
+                int other_particle_index = particle_bins[i];
+                apply_symmetric_force(particles[tid], particles[other_particle_index]);
             }
         }
     }
@@ -142,67 +171,54 @@ __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
 
 // Initialization function (host-side)
 void init_simulation(particle_t* parts, int num_parts, double size) {
-    // Calculate the number of blocks
+    // calculate the number of blocks
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
-    // Calculate bin parameters (on the host)
+    // calculate the bin parameters
     double host_bin_size = cutoff;
     int host_num_bins_x = static_cast<int>(size / host_bin_size) + 1;
     int host_num_bins_y = static_cast<int>(size / host_bin_size) + 1;
 
-    // Copy bin parameters to __device__ variables
-    cudaMemcpyToSymbol(::bin_size, &host_bin_size, sizeof(double));
-    cudaMemcpyToSymbol(::num_bins_x, &host_num_bins_x, sizeof(int));
-    cudaMemcpyToSymbol(::num_bins_y, &host_num_bins_y, sizeof(int));
+    // Cache calculation results to host variables
+    host_num_bins_x_cache = host_num_bins_x;
+    host_num_bins_y_cache = host_num_bins_y;
+
+    // calculate the total number of bins
+    const int num_bins = host_num_bins_x * host_num_bins_y;
+
+    // copy to device
+    cudaMemcpyToSymbol(bin_size, &host_bin_size, sizeof(double));
+    cudaMemcpyToSymbol(num_bins_x, &host_num_bins_x, sizeof(int));
+    cudaMemcpyToSymbol(num_bins_y, &host_num_bins_y, sizeof(int));
+
+    // allocate new memory
+    cudaMalloc(&d_bin_indices, num_parts * sizeof(int));
+    cudaMalloc(&d_bin_counts, num_bins * sizeof(int));
+    cudaMalloc(&d_bin_scan, num_bins * sizeof(int));
+    cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
 }
 
 // Simulation step function (host-side)
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // Get the values of num_bins_x and num_bins_y from device memory
-    int host_num_bins_x, host_num_bins_y;
-    cudaMemcpyFromSymbol(&host_num_bins_x, ::num_bins_x, sizeof(int));
-    cudaMemcpyFromSymbol(&host_num_bins_y, ::num_bins_y, sizeof(int));
+    const int num_bins = host_num_bins_x_cache * host_num_bins_y_cache;
 
-    int num_bins = host_num_bins_x * host_num_bins_y;
-
-    // Allocate memory on the device *per step*
-    int* d_bin_indices;
-    int* d_bin_counts;
-    int* d_bin_scan;
-    int* d_particle_bins;
-    cudaMalloc(&d_bin_indices, num_parts * sizeof(int));
-    cudaMalloc(&d_bin_counts, num_bins * sizeof(int));
-    cudaMalloc(&d_bin_scan, num_bins * sizeof(int));  // Still allocate space for the result
-    cudaMalloc(&d_particle_bins, num_parts * sizeof(int));
-
-    // Reset bin counts
+    // reset the bin counts
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
 
-    // 1. Assign particles to bins
+    // Step 1: assign particles to bins
     assign_bins_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_counts);
-    cudaDeviceSynchronize();
 
-    // 2. Exclusive prefix sum using Thrust
-    thrust::device_ptr<int> thrust_bin_counts(d_bin_counts);
-    thrust::device_ptr<int> thrust_bin_scan(d_bin_scan);
-    thrust::exclusive_scan(thrust_bin_counts, thrust_bin_counts + num_bins, thrust_bin_scan);
-    // No need for cudaDeviceSynchronize() here; Thrust operations are synchronous.
+    // Step 2: Calculate the prefix
+    thrust::exclusive_scan(thrust::device_ptr<int>(d_bin_counts),
+                           thrust::device_ptr<int>(d_bin_counts + num_bins),
+                           thrust::device_ptr<int>(d_bin_scan));
 
-    // 3. Reorder particle indices
+    // Step 3: Reorder the particles
     reorder_particles_gpu<<<blks, NUM_THREADS>>>(d_particle_bins, d_bin_indices, d_bin_scan, num_parts);
-    cudaDeviceSynchronize();
 
-    // 4. Compute forces
+    // Step 4: Calculate the forces
     compute_forces_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_scan, d_particle_bins);
-    cudaDeviceSynchronize();
 
-    // 5. Move particles
+    // Step 5: Move particles
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
-    cudaDeviceSynchronize();
-
-    // Free the dynamically allocated memory *per step*
-    cudaFree(d_bin_indices);
-    cudaFree(d_bin_counts);
-    cudaFree(d_bin_scan);
-    cudaFree(d_particle_bins);
 }
