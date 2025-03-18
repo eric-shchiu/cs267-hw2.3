@@ -66,62 +66,6 @@ __global__ void reorder_particles_gpu(int* particle_bins, int* bin_indices, int*
     particle_bins[offset] = tid; // Store particle index
 }
 
-// // Kernel to compute forces between particles, using binning
-// __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bin_indices, int* bin_scan, int* particle_bins) {
-//     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-//     if (tid >= num_parts) return;
-
-//     // Reset accelerations
-//     particles[tid].ax = 0.0;
-//     particles[tid].ay = 0.0;
-
-//     int bin_index = bin_indices[tid];
-
-//     // Calculate start and end indices for the current bin (using exclusive prefix sum)
-//     int bin_start = (bin_index == 0) ? 0 : bin_scan[bin_index - 1];
-//     int bin_end = bin_scan[bin_index];
-
-//     // Iterate over particles within the current bin
-//     for (int i = bin_start; i < bin_end; ++i) {
-//         int other_particle_index = particle_bins[i];
-//         if (tid != other_particle_index) {
-//             apply_force_gpu(particles[tid], particles[other_particle_index]);
-//         }
-//     }
-
-//     // Calculate 2D bin coordinates from the linear bin index
-//     int bin_x = bin_index % num_bins_x;
-//     int bin_y = bin_index / num_bins_x;
-
-//     // Iterate over neighboring bins (including the current bin, handled above)
-//     for (int dx = -1; dx <= 1; ++dx) {
-//         for (int dy = -1; dy <= 1; ++dy) {
-//             if (dx == 0 && dy == 0) continue; // Skip the current bin itself
-
-//             int neighbor_bin_x = bin_x + dx;
-//             int neighbor_bin_y = bin_y + dy;
-
-//             // Check if neighboring bin indices are within bounds
-//             if (neighbor_bin_x >= 0 && neighbor_bin_x < num_bins_x &&
-//                 neighbor_bin_y >= 0 && neighbor_bin_y < num_bins_y) {
-
-//                 int neighbor_bin_index = neighbor_bin_y * num_bins_x + neighbor_bin_x;
-
-//                 // Calculate start and end indices for the neighboring bin
-//                 int neighbor_bin_start = (neighbor_bin_index == 0) ? 0 : bin_scan[neighbor_bin_index - 1];
-//                 int neighbor_bin_end = bin_scan[neighbor_bin_index];
-
-//                 // Iterate over particles in the neighboring bin
-//                 for (int i = neighbor_bin_start; i < neighbor_bin_end; ++i) {
-//                     int other_particle_index = particle_bins[i];
-//                     apply_force_gpu(particles[tid], particles[other_particle_index]);
-//                 }
-//             }
-//         }
-//     }
-// }
-
-/* 新增对称力计算函数 */
 __device__ void apply_symmetric_force(particle_t& p1, particle_t& p2) {
     double dx = p2.x - p1.x;
     double dy = p2.y - p1.y;
@@ -133,13 +77,13 @@ __device__ void apply_symmetric_force(particle_t& p1, particle_t& p2) {
     double r = sqrt(r2);
     double coef = (1 - cutoff/r) / (r2 * mass);
 
-    // 同时更新两个粒子的加速度
+    // Update the acceleration of both particles
     double ax = coef * dx;
     double ay = coef * dy;
 
     atomicAdd(&p1.ax, ax);
     atomicAdd(&p1.ay, ay);
-    atomicAdd(&p2.ax, -ax); // 牛顿第三定律
+    atomicAdd(&p2.ax, -ax);
     atomicAdd(&p2.ay, -ay);
 }
 
@@ -169,8 +113,8 @@ __global__ void compute_forces_gpu(particle_t* particles, int num_parts, int* bi
     int bin_x = bin_index % num_bins_x;
     int bin_y = bin_index / num_bins_x;
 
-    /* Part 2: 处理特定方向的邻接 bins */
-    const int neighbor_dirs[4][2] = {{1,0},  {0,1},  {1,1}, {-1,1}}; // 右/下/右下/左下
+    // Iterate over neighboring bins (right / down / right-down / left-down)
+    const int neighbor_dirs[4][2] = {{1,0},  {0,1},  {1,1}, {-1,1}};
 
     for (int dir = 0; dir < 4; ++dir) {
         int dx = neighbor_dirs[dir][0];
