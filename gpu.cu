@@ -208,7 +208,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    float computation_time = 0.0f, synchronization_time = 0.0f;
+    float computation_time = 0.0f, communication_time = 0.0f;
 
     // Step 1: Reset the bin counts
     cudaMemset(d_bin_counts, 0, num_bins * sizeof(int));
@@ -218,15 +218,8 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     assign_bins_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, d_bin_indices, d_bin_counts);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&computation_time, start, stop);
-    comp_time += computation_time / 1000.0; // transfer to seconds
-
-    cudaEventRecord(start);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&synchronization_time, start, stop);
-    sync_time += synchronization_time / 1000.0;
+    cudaEventElapsedTime(&communication_time, start, stop);
+    comm_time += communication_time / 1000.0;
 
     // Prefix Sum
     cudaEventRecord(start);
@@ -235,30 +228,16 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
                            thrust::device_ptr<int>(d_bin_scan));
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&computation_time, start, stop);
-    comp_time += computation_time / 1000.0;
-
-    cudaEventRecord(start);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&synchronization_time, start, stop);
-    sync_time += synchronization_time / 1000.0;
+    cudaEventElapsedTime(&communication_time, start, stop);
+    comm_time += communication_time / 1000.0;
 
     // Reorder Particles
     cudaEventRecord(start);
     reorder_particles_gpu<<<blks, NUM_THREADS>>>(d_particle_bins, d_bin_indices, d_bin_scan, num_parts);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&computation_time, start, stop);
-    comp_time += computation_time / 1000.0;
-
-    cudaEventRecord(start);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&synchronization_time, start, stop);
-    sync_time += synchronization_time / 1000.0;
+    cudaEventElapsedTime(&communication_time, start, stop);
+    comm_time += communication_time / 1000.0;
 
     // Compute Forces
     cudaEventRecord(start);
@@ -268,13 +247,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     cudaEventElapsedTime(&computation_time, start, stop);
     comp_time += computation_time / 1000.0;
 
-    cudaEventRecord(start);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&synchronization_time, start, stop);
-    sync_time += synchronization_time / 1000.0;
-
     // Move Particles
     cudaEventRecord(start);
     move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, size);
@@ -282,13 +254,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&computation_time, start, stop);
     comp_time += computation_time / 1000.0;
-
-    cudaEventRecord(start);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&synchronization_time, start, stop);
-    sync_time += synchronization_time / 1000.0;
 
     // release cuda event
     cudaEventDestroy(start);

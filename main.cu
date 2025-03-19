@@ -13,7 +13,7 @@
 // Helper Functions
 // =================
 
-double sync_time = 0.0;
+double comm_time = 0.0;
 double comp_time = 0.0;
 
 // I/O routines
@@ -149,8 +149,8 @@ int main(int argc, char** argv) {
 
     // Finalize
     std::cout << "Simulation Time = " << seconds << " seconds for " << num_parts << " particles.\n";
-    std::cout << " Synchronization time: " << sync_time << " seconds\n";
-    std::cout << " Computation time: " << comp_time << " seconds\n";
+    std::cout << "Communication time: " << comm_time << " seconds\n";
+    std::cout << "Computation time: " << comp_time << " seconds\n";
     fsave.close();
     cudaFree(parts_gpu);
     delete[] parts;
